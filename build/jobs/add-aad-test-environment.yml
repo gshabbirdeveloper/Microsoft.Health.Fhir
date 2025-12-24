@@ -1,0 +1,51 @@
+steps:
+- task: AzureKeyVault@1
+  displayName: 'Azure Key Vault: resolute-oss-tenant-info'
+  inputs:
+    azureSubscription: $(ConnectedServiceName)
+    KeyVaultName: 'resolute-oss-tenant-info'
+
+- task: AzurePowerShell@5
+  displayName: Setup AAD Test Environment
+  retryCountOnTaskFailure: 1
+  inputs:
+    azureSubscription: $(ConnectedServiceName)
+    azurePowerShellVersion: latestVersion
+    ScriptType: inlineScript
+    Inline: |
+      # Install only required Microsoft Graph modules for better performance
+      # Use AllowClobber to handle any version conflicts
+      # Pin to version 2.33.0 due to bug in 2.34.0 affecting PowerShell 5.1
+      # See: https://github.com/microsoftgraph/msgraph-sdk-powershell/issues/3479
+      Install-Module -Name Microsoft.Graph.Authentication -RequiredVersion 2.33.0 -Force -Scope CurrentUser -AllowClobber
+      Install-Module -Name Microsoft.Graph.Applications -RequiredVersion 2.33.0 -Force -Scope CurrentUser -AllowClobber
+      Install-Module -Name Microsoft.Graph.Users -RequiredVersion 2.33.0 -Force -Scope CurrentUser -AllowClobber
+      Install-Module -Name Microsoft.Graph.Identity.DirectoryManagement -RequiredVersion 2.33.0 -Force -Scope CurrentUser -AllowClobber
+      Install-Module -Name Microsoft.PowerShell.SecretManagement -Force -Scope CurrentUser -AllowClobber
+
+      $module = Get-Module -Name Microsoft.Graph.Authentication
+      Write-Host $module.version
+
+      $tenantId = "$(tenant-id)"
+
+      # Set up Microsoft Graph authentication
+      $username = "$(tenant-admin-service-principal-name)"
+      $clientId = "$(tenant-admin-service-principal-id)"
+      $password_raw =  "$(tenant-admin-service-principal-password)"
+      $password =  ConvertTo-SecureString -AsPlainText $password_raw -Force
+      $clientSecretCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $clientId, $password
+
+      $environmentName = "$(DeploymentEnvironmentName)".ToLower() -replace "\.", "" 
+      $keyVaultName = "$(KeyVaultBaseName)-ts".ToLower() -replace "\.", ""
+      Write-Host "Installed module and set variables"
+
+      # Connect to Microsoft Graph using client credentials
+      Write-Host "Connecting to Microsoft Graph"
+      Connect-MgGraph -TenantId $tenantId -ClientSecretCredential $clientSecretCredential
+
+      Write-Host "Connected to Microsoft Graph"
+      Import-Module $(System.DefaultWorkingDirectory)/samples/scripts/PowerShell/FhirServer/FhirServer.psd1
+      Import-Module $(System.DefaultWorkingDirectory)/release/scripts/PowerShell/FhirServerRelease/FhirServerRelease.psd1
+
+      Write-Host "Imported modules"
+      $output = Add-AadTestAuthEnvironment -TestAuthEnvironmentPath $(System.DefaultWorkingDirectory)/testauthenvironment.json -EnvironmentName $environmentName -KeyVaultName $keyVaultName -ResourceGroupName $(UniqueResourceGroupName) -EnvironmentLocation $(ResourceGroupRegion) -TenantAdminCredential $clientSecretCredential -TenantId $tenantId -ClientId $clientId -ClientSecret $password
